@@ -6,97 +6,122 @@ CFG="${1:-}"
 # shellcheck disable=SC1090
 source "${CFG}"
 
-: "${DX_PROJECT_ID:?Must set DX_PROJECT_ID}"
-: "${APP_GBAT:=saige_gwas_gbat}"
-: "${DEST_SAIGE:=/saige/chr22_test}"
+: "${DX_PROJECT_ID:?Must set DX_PROJECT_ID in config}"
 : "${DEST_PERSIST:=/persist/rv_portability/saige_chr22_plumbing}"
+: "${DEST_SAIGE:=/saige/chr22_test}"
+: "${APP_GBAT:=saige_gwas_gbat}"
 : "${CHR:=22}"
-: "${GBAT_INSTANCE_TYPE:=mem1_hdd1_v2_x16}"
-: "${MAX_MAF_FOR_GROUP_TEST:=0.01}"
+
+: "${TEST_MODE:=1}"
+: "${TEST_INSTANCE_TYPE:=mem1_hdd1_v2_x16}"
+: "${FULL_INSTANCE_TYPE:=mem1_hdd1_v2_x72}"
+
+# Optional test-range (only used if you set EXTRA_OPTIONS below)
 : "${TEST_RANGE_START:=1}"
 : "${TEST_RANGE_END:=5000000}"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANIFEST_LOCAL="${ROOT}/configs/manifest_ids.env"
-STATE_LOCAL="${ROOT}/configs/chr22_plumbing.state.env"
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+echo "=============================="
+echo "[INFO] Stage 04: submit Step2 GBAT"
+echo "[INFO] CFG=${CFG}"
+echo "[INFO] DX_PROJECT_ID=${DX_PROJECT_ID}"
+echo "=============================="
 
 dx select "${DX_PROJECT_ID}" >/dev/null
 
-# Pull manifest if missing
-if [[ ! -f "${MANIFEST_LOCAL}" ]]; then
-  dx download "${DX_PROJECT_ID}:${DEST_PERSIST}/manifest_ids.env" -o "${MANIFEST_LOCAL}" --overwrite
+# Load manifest (for genotype IDs)
+MANIFEST_DX="${DX_PROJECT_ID}:${DEST_PERSIST}/manifest_ids.env"
+dx download "${MANIFEST_DX}" -o /tmp/manifest_ids.env --overwrite >/dev/null
+# shellcheck disable=SC1091
+source /tmp/manifest_ids.env
+
+: "${BGEN_ID:?Missing BGEN_ID in manifest}"
+: "${BGI_ID:?Missing BGI_ID in manifest}"
+: "${SAMPLE_ID:?Missing SAMPLE_ID in manifest}"
+
+# For Step2 we need outputs from Step1 + Sparse step:
+# You should explicitly set these IDs in chr22_plumbing.env once Step1 finished.
+# (plumbing best practice: don’t guess filenames)
+: "${MODEL_RDA_ID:=}"
+: "${VARIANCE_RATIO_ID:=}"
+: "${SPARSE_SIGMA_MTX_ID:=}"
+: "${GROUP_TXT_ID:=}"
+
+if [[ -z "${MODEL_RDA_ID}" || -z "${VARIANCE_RATIO_ID}" || -z "${SPARSE_SIGMA_MTX_ID}" || -z "${GROUP_TXT_ID}" ]]; then
+  cat >&2 <<MSG
+ERROR: Missing one or more required Step2 inputs.
+Please set these in configs/chr22_plumbing.env (copy/paste file IDs):
+  MODEL_RDA_ID="file-..."
+  VARIANCE_RATIO_ID="file-..."
+  SPARSE_SIGMA_MTX_ID="file-..."
+  GROUP_TXT_ID="file-..."
+
+Tip to find them after Step1 finishes:
+  dx ls ${DEST_SAIGE}
+  # then:
+  dx find data --path "${DX_PROJECT_ID}:${DEST_SAIGE}" --name "*.rda" --brief | head
+  dx find data --path "${DX_PROJECT_ID}:${DEST_SAIGE}" --name "*varianceRatio*" --brief | head
+  dx find data --path "${DX_PROJECT_ID}:${DEST_SAIGE}" --name "*sigma*" --brief | head
+MSG
+  exit 1
 fi
-# shellcheck disable=SC1090
-source "${MANIFEST_LOCAL}"
 
-# Pull state if missing
-if [[ ! -f "${STATE_LOCAL}" ]]; then
-  dx download "${DX_PROJECT_ID}:${DEST_PERSIST}/chr22_plumbing.state.env" -o "${STATE_LOCAL}" --overwrite || true
+INSTANCE="${FULL_INSTANCE_TYPE}"
+if [[ "${TEST_MODE}" -eq 1 ]]; then INSTANCE="${TEST_INSTANCE_TYPE}"; fi
+
+OUT_PREFIX="wes_oqfe_chr${CHR}_gbat_testmode${TEST_MODE}"
+
+# Optional: pass a short region restriction during testing (if desired)
+EXTRA_OPTS="${EXTRA_OPTIONS:-}"
+if [[ "${TEST_MODE}" -eq 1 && -z "${EXTRA_OPTS}" ]]; then
+  # Keep default empty unless you WANT region restriction.
+  # Example: EXTRA_OPTS="--start ${TEST_RANGE_START} --end ${TEST_RANGE_END}"
+  EXTRA_OPTS=""
 fi
-# shellcheck disable=SC1090
-source "${STATE_LOCAL}" || true
 
-die() { echo "ERROR: $*" >&2; exit 1; }
-
-pick_one() {
-  local pattern="$1"
-  local id
-  id="$(dx find data --path "${DEST_SAIGE}" --name "${pattern}" --brief | head -n 1 || true)"
-  [[ -n "${id:-}" ]] || die "Could not find output matching: ${pattern} in ${DEST_SAIGE}"
-  echo "$id"
-}
-
-NULL_PREFIX="${NULL_OUT_PREFIX:-wes_oqfe_chr${CHR}_null}"
-
-MODEL_RDA_ID="$(pick_one "${NULL_PREFIX}*.rda")"
-VR_ID="$(pick_one "${NULL_PREFIX}*variance*ratio*")"
-
-# group file: prefer explicit ID
-GROUP_ID="${GROUP_TXT_ID:-}"
-if [[ -z "${GROUP_ID}" ]]; then
-  # Attempt search pattern (may fail)
-  if [[ -n "${GROUP_FILE_PATTERN:-}" ]]; then
-    echo "[WARN] GROUP_TXT_ID not set; trying to find with pattern: ${GROUP_FILE_PATTERN}"
-    GROUP_ID="$(dx find data --path "${SRC_PROJ}:/Bulk" --name "${GROUP_FILE_PATTERN}" --brief | head -n 1 || true)"
-  fi
-fi
-[[ -n "${GROUP_ID}" ]] || die "Missing group file. Set GROUP_TXT_ID in chr22_plumbing.env (recommended)."
-
-OUT_PREFIX="wes_oqfe_chr${CHR}_gbat"
-
-echo "=============================="
-echo "[INFO] Stage 04: submit GBAT"
-echo "[INFO] instance: ${GBAT_INSTANCE_TYPE}"
-echo "[INFO] model_rda: ${MODEL_RDA_ID}"
-echo "[INFO] variance_ratio: ${VR_ID}"
-echo "[INFO] group_txt: ${GROUP_ID}"
-echo "=============================="
+echo "[INFO] instance-type: ${INSTANCE}"
+echo "[INFO] output_prefix: ${OUT_PREFIX}"
+echo "[INFO] destination: ${DEST_SAIGE}"
+[[ -n "${EXTRA_OPTS}" ]] && echo "[INFO] extra_options: ${EXTRA_OPTS}"
 
 JOB_ID="$(dx run "${APP_GBAT}" \
   --yes --brief \
-  --instance-type "${GBAT_INSTANCE_TYPE}" \
+  --instance-type "${INSTANCE}" \
   -igenotypes_bgen="${BGEN_ID}" \
   -igenotypes_bgen_bgi="${BGI_ID}" \
   -isample_txt="${SAMPLE_ID}" \
   -imodel_rda="${MODEL_RDA_ID}" \
-  -ivariance_ratio_txt="${VR_ID}" \
-  -igroup_txt="${GROUP_ID}" \
-  -imax_maf_for_group_test="${MAX_MAF_FOR_GROUP_TEST}" \
-  -istart="${TEST_RANGE_START}" \
-  -iend="${TEST_RANGE_END}" \
+  -ivariance_ratio_txt="${VARIANCE_RATIO_ID}" \
+  -igroup_txt="${GROUP_TXT_ID}" \
+  -isparse_sigma_mtx="${SPARSE_SIGMA_MTX_ID}" \
   -ioutput_file_prefix="${OUT_PREFIX}" \
+  -iextra_options="${EXTRA_OPTS}" \
   --destination "${DEST_SAIGE}")"
 
 echo "[OK] Submitted GBAT job: ${JOB_ID}"
 echo "[INFO] Watch with: dx watch ${JOB_ID}"
 
+# Update local state then persist
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_LOCAL="${ROOT}/configs/chr22_plumbing.state.env"
+
+if [[ ! -f "${STATE_LOCAL}" ]]; then
+  cat > "${STATE_LOCAL}" <<STATE
+# Auto-generated by 04_submit_step2_gbat_dx.sh on $(date -u)
+DEST_PERSIST="${DEST_PERSIST}"
+DEST_SAIGE="${DEST_SAIGE}"
+STATE
+fi
+
 {
+  echo ""
+  echo "# Added by 04_submit_step2_gbat_dx.sh on $(date -u)"
   echo "GBAT_JOB_ID=\"${JOB_ID}\""
   echo "GBAT_OUT_PREFIX=\"${OUT_PREFIX}\""
-  echo "MODEL_RDA_ID=\"${MODEL_RDA_ID}\""
-  echo "VR_ID=\"${VR_ID}\""
-  echo "GROUP_TXT_ID_RESOLVED=\"${GROUP_ID}\""
 } >> "${STATE_LOCAL}"
 
-dx upload "${STATE_LOCAL}" --path "${DEST_PERSIST}" --parents --overwrite >/dev/null
+dx rm -f "${DX_PROJECT_ID}:${DEST_PERSIST}/chr22_plumbing.state.env" >/dev/null 2>&1 || true
+dx upload "${STATE_LOCAL}" --path "${DEST_PERSIST}" --parents >/dev/null
+
 echo "[OK] Updated state persisted: ${DEST_PERSIST}/chr22_plumbing.state.env"
