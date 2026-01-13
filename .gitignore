@@ -1,3 +1,14 @@
 
 # Jupyter checkpoints
 **/.ipynb_checkpoints/
+
+# Jupyter / misc
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Project logs + run artifacts
+projects/**/logs/
+projects/**/configs/*.state.env
+projects/**/configs/*.state.env.*
+*.pid
+*.log
