@@ -16,11 +16,34 @@ source "${CFG}"
 : "${TEST_INSTANCE_TYPE:=mem1_hdd1_v2_x16}"
 : "${FULL_INSTANCE_TYPE:=mem1_hdd1_v2_x72}"
 
-# Optional test-range (only used if you set EXTRA_OPTIONS below)
 : "${TEST_RANGE_START:=1}"
 : "${TEST_RANGE_END:=5000000}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+resolve_dx_file_id_by_name_in_folder() {
+  local folder="$1"
+  local name="$2"
+  dx find data --path "${folder}" --name "${name}" --brief | head -n 1
+}
+
+download_named_from_persist() {
+  local name="$1"
+  local out="$2"
+  local dx_path="${DX_PROJECT_ID}:${DEST_PERSIST}/${name}"
+
+  if dx download "${dx_path}" -o "${out}" -f >/dev/null 2>&1; then
+    echo "${out}"
+    return 0
+  fi
+
+  local file_id
+  file_id="$(resolve_dx_file_id_by_name_in_folder "${DEST_PERSIST}" "${name}" || true)"
+  [[ -n "${file_id:-}" ]] || die "Could not find ${name} in ${DEST_PERSIST}. Verify: dx ls ${DEST_PERSIST}"
+
+  dx download "${file_id}" -o "${out}" -f >/dev/null
+  echo "${out}"
+}
 
 echo "=============================="
 echo "[INFO] Stage 04: submit Step2 GBAT"
@@ -30,19 +53,15 @@ echo "=============================="
 
 dx select "${DX_PROJECT_ID}" >/dev/null
 
-# Load manifest (for genotype IDs)
-MANIFEST_DX="${DX_PROJECT_ID}:${DEST_PERSIST}/manifest_ids.env"
-dx download "${MANIFEST_DX}" -o /tmp/manifest_ids.env --overwrite >/dev/null
-# shellcheck disable=SC1091
-source /tmp/manifest_ids.env
+MANIFEST_LOCAL="$(download_named_from_persist "manifest_ids.env" "/tmp/manifest_ids.env")"
+# shellcheck disable=SC1090
+source "${MANIFEST_LOCAL}"
 
 : "${BGEN_ID:?Missing BGEN_ID in manifest}"
 : "${BGI_ID:?Missing BGI_ID in manifest}"
 : "${SAMPLE_ID:?Missing SAMPLE_ID in manifest}"
 
-# For Step2 we need outputs from Step1 + Sparse step:
-# You should explicitly set these IDs in chr22_plumbing.env once Step1 finished.
-# (plumbing best practice: don’t guess filenames)
+# You must set these in chr22_plumbing.env once Step1 completes:
 : "${MODEL_RDA_ID:=}"
 : "${VARIANCE_RATIO_ID:=}"
 : "${SPARSE_SIGMA_MTX_ID:=}"
@@ -57,9 +76,8 @@ Please set these in configs/chr22_plumbing.env (copy/paste file IDs):
   SPARSE_SIGMA_MTX_ID="file-..."
   GROUP_TXT_ID="file-..."
 
-Tip to find them after Step1 finishes:
+To find after Step1 finishes:
   dx ls ${DEST_SAIGE}
-  # then:
   dx find data --path "${DX_PROJECT_ID}:${DEST_SAIGE}" --name "*.rda" --brief | head
   dx find data --path "${DX_PROJECT_ID}:${DEST_SAIGE}" --name "*varianceRatio*" --brief | head
   dx find data --path "${DX_PROJECT_ID}:${DEST_SAIGE}" --name "*sigma*" --brief | head
@@ -72,12 +90,11 @@ if [[ "${TEST_MODE}" -eq 1 ]]; then INSTANCE="${TEST_INSTANCE_TYPE}"; fi
 
 OUT_PREFIX="wes_oqfe_chr${CHR}_gbat_testmode${TEST_MODE}"
 
-# Optional: pass a short region restriction during testing (if desired)
 EXTRA_OPTS="${EXTRA_OPTIONS:-}"
 if [[ "${TEST_MODE}" -eq 1 && -z "${EXTRA_OPTS}" ]]; then
-  # Keep default empty unless you WANT region restriction.
-  # Example: EXTRA_OPTS="--start ${TEST_RANGE_START} --end ${TEST_RANGE_END}"
   EXTRA_OPTS=""
+  # Example if you want region restriction:
+  # EXTRA_OPTS="--start ${TEST_RANGE_START} --end ${TEST_RANGE_END}"
 fi
 
 echo "[INFO] instance-type: ${INSTANCE}"
@@ -102,7 +119,6 @@ JOB_ID="$(dx run "${APP_GBAT}" \
 echo "[OK] Submitted GBAT job: ${JOB_ID}"
 echo "[INFO] Watch with: dx watch ${JOB_ID}"
 
-# Update local state then persist
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_LOCAL="${ROOT}/configs/chr22_plumbing.state.env"
 
