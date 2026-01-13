@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve project root robustly
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -11,7 +10,6 @@ CFG="${ROOT}/configs/chr22_plumbing.env"
 # shellcheck disable=SC1090
 source "${CFG}"
 
-# Defaults (avoid unbound vars)
 : "${DX_PROJECT_ID:?Must set DX_PROJECT_ID in config}"
 : "${DX_LOG_DIR:=/persist/logs/rv_portability/saige_chr22_plumbing}"
 : "${DEST_PERSIST:=/persist/rv_portability/saige_chr22_plumbing}"
@@ -27,14 +25,12 @@ echo "[INFO] Project root: ${ROOT}"
 echo "[INFO] Config: ${CFG}"
 echo "[INFO] Log: ${RUN_LOG}"
 
-# Run pipeline in background (submission + small prep happens locally; heavy compute runs on DNAnexus jobs)
 nohup bash -lc "
   set -euo pipefail
   echo '[INFO] Starting pipeline at:' \$(date)
   echo '[INFO] PWD:' \$(pwd)
   echo '[INFO] Using config:' '${CFG}'
 
-  # Ensure dx context
   dx select '${DX_PROJECT_ID}' >/dev/null
   dx mkdir -p '${DX_LOG_DIR}' >/dev/null || true
   dx mkdir -p '${DEST_PERSIST}' >/dev/null || true
@@ -46,8 +42,8 @@ nohup bash -lc "
   }
 
   sync_log() {
-    # Best-effort: persist the latest log snapshot to DNAnexus
-    dx upload '${RUN_LOG}' --path '${DX_LOG_DIR}' --parents --overwrite --brief >/dev/null 2>&1 || true
+    # dx upload has NO --overwrite; log filenames are unique, so just upload.
+    dx upload '${RUN_LOG}' --path '${DX_LOG_DIR}' --parents --brief >/dev/null 2>&1 || true
   }
 
   stage '01_prepare_inputs'
